@@ -8,6 +8,7 @@ const state = {
   activeId: null,
   activeTab: 'global',
   searchQuery: '',
+  lockedLocation: null,
   editDraft: null,
   prevView: 'list',   // for cancel-edit navigation
 };
@@ -67,14 +68,20 @@ function esc(str) {
     .replace(/"/g, '&quot;');
 }
 
-function renderList() {
+function getFilteredMachines() {
   const q = state.searchQuery.toLowerCase();
-  const filtered = state.machines.filter(m =>
-    m.name.toLowerCase().includes(q) || m.location.toLowerCase().includes(q)
-  );
+  return state.machines
+    .filter(m => {
+      const matchesSearch = m.name.toLowerCase().includes(q) || m.location.toLowerCase().includes(q);
+      const matchesLocation = !state.lockedLocation || m.location === state.lockedLocation;
+      return matchesSearch && matchesLocation;
+    })
+    .sort((a, b) => a.name.localeCompare(b.name));
+}
 
-  const rows = filtered.length
-    ? filtered.map(m => `
+function renderMachineRows(machines) {
+  return machines.length
+    ? machines.map(m => `
       <li class="machine-row" data-action="open-machine" data-id="${esc(m.id)}">
         <div class="machine-row-info">
           <div class="machine-row-name">${esc(m.name)}</div>
@@ -84,8 +91,23 @@ function renderList() {
       </li>`).join('')
     : `<li class="empty-state">
         <p>🎰</p>
-        <p>${q ? 'No machines match your search.' : 'No machines yet.\nTap + to add your first machine.'}</p>
+        <p>${state.searchQuery || state.lockedLocation ? 'No machines match.' : 'No machines yet.\nTap + to add your first machine.'}</p>
        </li>`;
+}
+
+function renderLocationPills() {
+  const locations = [...new Set(state.machines.map(m => m.location).filter(Boolean))].sort();
+  if (locations.length < 2) return '';
+  const pills = [{ val: '', label: 'All' }, ...locations.map(l => ({ val: l, label: l }))]
+    .map(({ val, label }) => {
+      const active = val === '' ? !state.lockedLocation : state.lockedLocation === val;
+      return `<button class="location-pill${active ? ' active' : ''}" data-action="set-location-lock" data-location="${esc(val)}">${esc(label)}</button>`;
+    }).join('');
+  return `<div class="location-pills">${pills}</div>`;
+}
+
+function renderList() {
+  const filtered = getFilteredMachines();
 
   return `
     <div class="app-header">
@@ -104,7 +126,8 @@ function renderList() {
           spellcheck="false"
         >
       </div>
-      <ul class="machine-list">${rows}</ul>
+      ${renderLocationPills()}
+      <ul class="machine-list">${renderMachineRows(filtered)}</ul>
     </div>
     <button class="fab" data-action="add-machine" aria-label="Add machine">+</button>
   `;
@@ -386,6 +409,10 @@ document.addEventListener('click', function(e) {
       state.activeTab = el.dataset.tab;
       render();
     }
+
+  } else if (action === 'set-location-lock') {
+    state.lockedLocation = el.dataset.location || null;
+    render();
   }
 });
 
@@ -397,20 +424,7 @@ document.addEventListener('input', function(e) {
     // Re-render only the list portion without losing focus
     const list = document.querySelector('.machine-list');
     if (list) {
-      const q = state.searchQuery.toLowerCase();
-      const filtered = state.machines.filter(m =>
-        m.name.toLowerCase().includes(q) || m.location.toLowerCase().includes(q)
-      );
-      list.innerHTML = filtered.length
-        ? filtered.map(m => `
-          <li class="machine-row" data-action="open-machine" data-id="${esc(m.id)}">
-            <div class="machine-row-info">
-              <div class="machine-row-name">${esc(m.name)}</div>
-              ${m.location ? `<div class="machine-row-location">${esc(m.location)}</div>` : ''}
-            </div>
-            <span class="machine-row-chevron">›</span>
-          </li>`).join('')
-        : `<li class="empty-state"><p>No machines match your search.</p></li>`;
+      list.innerHTML = renderMachineRows(getFilteredMachines());
     }
   }
 });
