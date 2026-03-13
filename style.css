@@ -290,6 +290,39 @@ html, body {
   border-bottom-color: var(--accent);
 }
 
+/* ── Location selector (inside This Machine tab) ── */
+.loc-selector {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 4px;
+}
+
+.loc-actions {
+  display: flex;
+  gap: 12px;
+}
+
+.loc-action-btn {
+  background: none;
+  border: none;
+  font-size: 13px;
+  color: var(--text-muted);
+  padding: 0;
+  cursor: pointer;
+}
+
+.loc-action-btn.danger {
+  color: var(--danger);
+}
+
+.add-loc-btn {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
 /* ── Note fields ── */
 .tab-content {
   padding: 16px;

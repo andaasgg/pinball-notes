@@ -3,14 +3,15 @@
 // ── State ──────────────────────────────────────────────────────────────────
 
 const state = {
-  view: 'list',       // 'list' | 'detail' | 'edit'
+  view: 'list',           // 'list' | 'detail' | 'edit'
   machines: [],
   activeId: null,
+  activeLocationId: null, // which location is shown in the "This Machine" tab
   activeTab: 'global',
   searchQuery: '',
   lockedLocation: null,
   editDraft: null,
-  prevView: 'list',   // for cancel-edit navigation
+  prevView: 'list',
 };
 
 // ── Persistence ────────────────────────────────────────────────────────────
@@ -18,7 +19,8 @@ const state = {
 async function load() {
   try {
     const res = await fetch('api.php');
-    state.machines = await res.json();
+    const data = await res.json();
+    state.machines = data.map(migrate);
   } catch (e) {
     state.machines = [];
   }
@@ -32,30 +34,74 @@ function save() {
   });
 }
 
+// Migrate old single-location format to multi-location format
+function migrate(m) {
+  if (m.locations) return m; // already new format
+  return {
+    id: m.id,
+    name: m.name,
+    globalNotes: m.globalNotes || '',
+    updatedAt: m.updatedAt || Date.now(),
+    locations: [{
+      id: genId(),
+      name: m.location || 'Unknown',
+      skillShot:  m.locationNotes?.skillShot  || '',
+      feeds:      m.locationNotes?.feeds      || '',
+      bouncePass: m.locationNotes?.bouncePass || '',
+      postPass:   m.locationNotes?.postPass   || '',
+      tapPass:    m.locationNotes?.tapPass    || '',
+      freeForm:   m.locationNotes?.freeForm   || '',
+    }],
+  };
+}
+
 function genId() {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+}
+
+function blankLocation(name) {
+  return { id: genId(), name: name || '', skillShot: '', feeds: '', bouncePass: '', postPass: '', tapPass: '', freeForm: '' };
+}
+
+function blankMachine(locationName) {
+  return {
+    id: genId(),
+    name: '',
+    globalNotes: '',
+    updatedAt: Date.now(),
+    locations: [blankLocation(locationName || '')],
+  };
 }
 
 function getMachine(id) {
   return state.machines.find(m => m.id === id);
 }
 
-function blankMachine() {
-  return {
-    id: genId(),
-    name: '',
-    location: '',
-    globalNotes: '',
-    locationNotes: {
-      skillShot: '',
-      feeds: '',
-      bouncePass: '',
-      postPass: '',
-      tapPass: '',
-      freeForm: '',
-    },
-    updatedAt: Date.now(),
-  };
+function getActiveLocation(machine) {
+  return machine.locations.find(l => l.id === state.activeLocationId)
+    || machine.locations[0];
+}
+
+// ── Filtering / sorting ────────────────────────────────────────────────────
+
+function allLocationNames() {
+  const names = new Set();
+  state.machines.forEach(m => m.locations.forEach(l => { if (l.name) names.add(l.name); }));
+  return [...names].sort();
+}
+
+function getFilteredMachines() {
+  const q = state.searchQuery.toLowerCase();
+  return state.machines
+    .filter(m => {
+      const locNames = m.locations.map(l => l.name.toLowerCase());
+      const matchesSearch = m.name.toLowerCase().includes(q)
+        || locNames.some(n => n.includes(q));
+      const matchesLocation = !state.lockedLocation
+        || m.locations.some(l => l.name === state.lockedLocation);
+      return matchesSearch && matchesLocation;
+    })
+    .sort((a, b) => a.name.localeCompare(b.name));
 }
 
 // ── Rendering ──────────────────────────────────────────────────────────────
@@ -68,35 +114,28 @@ function esc(str) {
     .replace(/"/g, '&quot;');
 }
 
-function getFilteredMachines() {
-  const q = state.searchQuery.toLowerCase();
-  return state.machines
-    .filter(m => {
-      const matchesSearch = m.name.toLowerCase().includes(q) || m.location.toLowerCase().includes(q);
-      const matchesLocation = !state.lockedLocation || m.location === state.lockedLocation;
-      return matchesSearch && matchesLocation;
-    })
-    .sort((a, b) => a.name.localeCompare(b.name));
-}
-
 function renderMachineRows(machines) {
-  return machines.length
-    ? machines.map(m => `
+  if (!machines.length) {
+    return `<li class="empty-state">
+      <p>🎰</p>
+      <p>${state.searchQuery || state.lockedLocation ? 'No machines match.' : 'No machines yet.\nTap + to add your first machine.'}</p>
+    </li>`;
+  }
+  return machines.map(m => {
+    const locLabel = m.locations.map(l => l.name).filter(Boolean).join(', ');
+    return `
       <li class="machine-row" data-action="open-machine" data-id="${esc(m.id)}">
         <div class="machine-row-info">
           <div class="machine-row-name">${esc(m.name)}</div>
-          ${m.location ? `<div class="machine-row-location">${esc(m.location)}</div>` : ''}
+          ${locLabel ? `<div class="machine-row-location">${esc(locLabel)}</div>` : ''}
         </div>
         <span class="machine-row-chevron">›</span>
-      </li>`).join('')
-    : `<li class="empty-state">
-        <p>🎰</p>
-        <p>${state.searchQuery || state.lockedLocation ? 'No machines match.' : 'No machines yet.\nTap + to add your first machine.'}</p>
-       </li>`;
+      </li>`;
+  }).join('');
 }
 
 function renderLocationPills() {
-  const locations = [...new Set(state.machines.map(m => m.location).filter(Boolean))].sort();
+  const locations = allLocationNames();
   if (locations.length < 2) return '';
   const pills = [{ val: '', label: 'All' }, ...locations.map(l => ({ val: l, label: l }))]
     .map(({ val, label }) => {
@@ -107,8 +146,6 @@ function renderLocationPills() {
 }
 
 function renderList() {
-  const filtered = getFilteredMachines();
-
   return `
     <div class="app-header">
       <h1>Pinball Notes</h1>
@@ -127,7 +164,7 @@ function renderList() {
         >
       </div>
       ${renderLocationPills()}
-      <ul class="machine-list">${renderMachineRows(filtered)}</ul>
+      <ul class="machine-list">${renderMachineRows(getFilteredMachines())}</ul>
     </div>
     <button class="fab" data-action="add-machine" aria-label="Add machine">+</button>
   `;
@@ -150,9 +187,27 @@ function renderGlobalTab(machine) {
 }
 
 function renderLocationTab(machine) {
-  const ln = machine.locationNotes;
+  const loc = getActiveLocation(machine);
+  const locPills = machine.locations.map(l => `
+    <button class="location-pill${l.id === loc.id ? ' active' : ''}"
+      data-action="switch-location" data-loc-id="${esc(l.id)}">${esc(l.name || 'Unnamed')}</button>
+  `).join('');
+
   return `
     <div class="tab-content">
+      <div class="loc-selector">
+        <div class="location-pills" style="padding: 0; margin-bottom: 0;">
+          ${locPills}
+          <button class="location-pill add-loc-btn" data-action="add-location">+ Add</button>
+        </div>
+        <div class="loc-actions">
+          <button class="loc-action-btn" data-action="rename-location" data-loc-id="${esc(loc.id)}">Rename</button>
+          ${machine.locations.length > 1
+            ? `<button class="loc-action-btn danger" data-action="delete-location" data-loc-id="${esc(loc.id)}">Delete</button>`
+            : ''}
+        </div>
+      </div>
+
       <div class="field-group">
         <label class="field-label">Skill Shot / Plunge</label>
         <input
@@ -161,7 +216,7 @@ function renderLocationTab(machine) {
           data-action="autosave-loc"
           data-field="skillShot"
           placeholder="e.g. 3/4 power to second lane"
-          value="${esc(ln.skillShot)}"
+          value="${esc(loc.skillShot)}"
           autocomplete="off"
         >
       </div>
@@ -172,7 +227,7 @@ function renderLocationTab(machine) {
           data-action="autosave-loc"
           data-field="feeds"
           placeholder="Left inlane feeds clean, right outlane drains fast…"
-        >${esc(ln.feeds)}</textarea>
+        >${esc(loc.feeds)}</textarea>
       </div>
       <div class="field-group">
         <label class="field-label">Bounce Pass</label>
@@ -181,7 +236,7 @@ function renderLocationTab(machine) {
           data-action="autosave-loc"
           data-field="bouncePass"
           placeholder="How the ball bounces off the flipper on this machine…"
-        >${esc(ln.bouncePass)}</textarea>
+        >${esc(loc.bouncePass)}</textarea>
       </div>
       <div class="field-group">
         <label class="field-label">Post Pass</label>
@@ -190,7 +245,7 @@ function renderLocationTab(machine) {
           data-action="autosave-loc"
           data-field="postPass"
           placeholder="Right-to-left or left-to-right, timing notes…"
-        >${esc(ln.postPass)}</textarea>
+        >${esc(loc.postPass)}</textarea>
       </div>
       <div class="field-group">
         <label class="field-label">Tap Pass</label>
@@ -199,7 +254,7 @@ function renderLocationTab(machine) {
           data-action="autosave-loc"
           data-field="tapPass"
           placeholder="Tap pass feel, timing quirks on this machine…"
-        >${esc(ln.tapPass)}</textarea>
+        >${esc(loc.tapPass)}</textarea>
       </div>
       <div class="field-group">
         <label class="field-label">Additional Notes</label>
@@ -208,7 +263,7 @@ function renderLocationTab(machine) {
           data-action="autosave-loc"
           data-field="freeForm"
           placeholder="Any other location-specific observations…"
-        >${esc(ln.freeForm)}</textarea>
+        >${esc(loc.freeForm)}</textarea>
       </div>
     </div>
   `;
@@ -229,7 +284,6 @@ function renderDetail() {
       <button class="icon-btn" data-action="edit-machine" data-id="${esc(machine.id)}" aria-label="Edit">✎</button>
       <button class="icon-btn danger" data-action="delete-machine" data-id="${esc(machine.id)}" aria-label="Delete">🗑</button>
     </div>
-    ${machine.location ? `<div class="detail-meta">${esc(machine.location)}</div>` : ''}
     <div class="tab-bar">
       <button class="tab-btn ${state.activeTab === 'global' ? 'active' : ''}"
         data-action="switch-tab" data-tab="global">Global</button>
@@ -246,7 +300,7 @@ function renderEditModal() {
   return `
     <div class="modal-overlay" data-action="cancel-edit-overlay">
       <div class="modal">
-        <h2>${isNew ? 'Add Machine' : 'Edit Machine'}</h2>
+        <h2>${isNew ? 'Add Machine' : 'Edit Machine Name'}</h2>
         <div class="field-group">
           <label class="field-label">Machine Name</label>
           <input
@@ -259,18 +313,19 @@ function renderEditModal() {
             autocorrect="off"
           >
         </div>
+        ${isNew ? `
         <div class="field-group">
-          <label class="field-label">Location</label>
+          <label class="field-label">First Location</label>
           <input
             class="field-input"
             id="edit-location"
             type="text"
             placeholder="e.g. Ground Kontrol, Portland"
-            value="${esc(d.location)}"
+            value="${esc(d.locations[0]?.name || '')}"
             autocomplete="off"
             autocorrect="off"
           >
-        </div>
+        </div>` : ''}
         <div class="modal-actions">
           <button class="btn btn-secondary" data-action="cancel-edit">Cancel</button>
           <button class="btn btn-primary" data-action="save-edit">Save</button>
@@ -284,7 +339,6 @@ function render() {
   const app = document.getElementById('app');
   if (state.view === 'list') {
     app.innerHTML = renderList();
-    // Restore focus to search if query is active
     if (state.searchQuery) {
       const input = app.querySelector('.search-input');
       if (input) input.focus();
@@ -292,10 +346,8 @@ function render() {
   } else if (state.view === 'detail') {
     app.innerHTML = renderDetail();
   } else if (state.view === 'edit') {
-    // Render the underlying view first, then overlay the modal
     const base = state.prevView === 'detail' ? renderDetail() : renderList();
     app.innerHTML = base + renderEditModal();
-    // Auto-focus the name field
     setTimeout(() => {
       const nameInput = app.querySelector('#edit-name');
       if (nameInput && !state.editDraft.name) nameInput.focus();
@@ -305,12 +357,12 @@ function render() {
 
 // ── Auto-save helpers ──────────────────────────────────────────────────────
 
-// Updates machine field in memory + storage without re-rendering
 function autosaveField(field, value, isLocationNote) {
   const machine = getMachine(state.activeId);
   if (!machine) return;
   if (isLocationNote) {
-    machine.locationNotes[field] = value;
+    const loc = getActiveLocation(machine);
+    if (loc) loc[field] = value;
   } else {
     machine[field] = value;
   }
@@ -329,6 +381,11 @@ document.addEventListener('click', function(e) {
     state.activeId = el.dataset.id;
     state.activeTab = 'global';
     state.prevView = 'list';
+    const machine = getMachine(state.activeId);
+    // If a location is locked and this machine has it, open to that location
+    const preferred = state.lockedLocation
+      && machine?.locations.find(l => l.name === state.lockedLocation);
+    state.activeLocationId = preferred ? preferred.id : machine?.locations[0]?.id || null;
     state.view = 'detail';
     render();
 
@@ -337,7 +394,7 @@ document.addEventListener('click', function(e) {
     render();
 
   } else if (action === 'add-machine') {
-    state.editDraft = blankMachine();
+    state.editDraft = blankMachine(state.lockedLocation || '');
     state.prevView = state.view;
     state.view = 'edit';
     render();
@@ -345,7 +402,7 @@ document.addEventListener('click', function(e) {
   } else if (action === 'edit-machine') {
     const machine = getMachine(el.dataset.id);
     if (!machine) return;
-    state.editDraft = { ...machine };
+    state.editDraft = { ...machine, locations: machine.locations.map(l => ({ ...l })) };
     state.prevView = 'detail';
     state.view = 'edit';
     render();
@@ -370,25 +427,23 @@ document.addEventListener('click', function(e) {
       return;
     }
     state.editDraft.name = name;
-    state.editDraft.location = locationInput ? locationInput.value.trim() : '';
+    if (locationInput) {
+      state.editDraft.locations[0].name = locationInput.value.trim();
+    }
     state.editDraft.updatedAt = Date.now();
 
     const existing = getMachine(state.editDraft.id);
     if (existing) {
-      // Update in place, preserving notes
-      Object.assign(existing, state.editDraft);
+      existing.name = state.editDraft.name;
+      existing.updatedAt = state.editDraft.updatedAt;
     } else {
       state.machines.unshift(state.editDraft);
       state.activeId = state.editDraft.id;
+      state.activeLocationId = state.editDraft.locations[0].id;
     }
     save();
-
-    if (state.prevView === 'detail' || state.activeId === state.editDraft.id) {
-      state.activeId = state.editDraft.id;
-      state.view = 'detail';
-    } else {
-      state.view = 'list';
-    }
+    state.activeId = state.editDraft.id;
+    state.view = 'detail';
     state.editDraft = null;
     render();
 
@@ -398,7 +453,6 @@ document.addEventListener('click', function(e) {
     render();
 
   } else if (action === 'cancel-edit-overlay') {
-    // Only cancel if clicking directly on the overlay, not a child element
     if (e.target !== el) return;
     state.editDraft = null;
     state.view = state.prevView;
@@ -410,26 +464,65 @@ document.addEventListener('click', function(e) {
       render();
     }
 
+  } else if (action === 'switch-location') {
+    if (state.activeLocationId !== el.dataset.locId) {
+      state.activeLocationId = el.dataset.locId;
+      render();
+    }
+
+  } else if (action === 'add-location') {
+    const name = prompt('Location name:')?.trim();
+    if (!name) return;
+    const machine = getMachine(state.activeId);
+    if (!machine) return;
+    const loc = blankLocation(name);
+    machine.locations.push(loc);
+    machine.updatedAt = Date.now();
+    state.activeLocationId = loc.id;
+    save();
+    render();
+
+  } else if (action === 'rename-location') {
+    const machine = getMachine(state.activeId);
+    if (!machine) return;
+    const loc = machine.locations.find(l => l.id === el.dataset.locId);
+    if (!loc) return;
+    const name = prompt('Rename location:', loc.name)?.trim();
+    if (!name || name === loc.name) return;
+    loc.name = name;
+    machine.updatedAt = Date.now();
+    save();
+    render();
+
+  } else if (action === 'delete-location') {
+    const machine = getMachine(state.activeId);
+    if (!machine) return;
+    const loc = machine.locations.find(l => l.id === el.dataset.locId);
+    if (!loc) return;
+    if (!confirm(`Delete location "${loc.name}"? Its notes will be lost.`)) return;
+    machine.locations = machine.locations.filter(l => l.id !== loc.id);
+    machine.updatedAt = Date.now();
+    state.activeLocationId = machine.locations[0].id;
+    save();
+    render();
+
   } else if (action === 'set-location-lock') {
     state.lockedLocation = el.dataset.location || null;
     render();
   }
 });
 
-// Search input
+// Search input — update list without losing focus
 document.addEventListener('input', function(e) {
   const el = e.target;
   if (el.dataset.action === 'search-input') {
     state.searchQuery = el.value;
-    // Re-render only the list portion without losing focus
     const list = document.querySelector('.machine-list');
-    if (list) {
-      list.innerHTML = renderMachineRows(getFilteredMachines());
-    }
+    if (list) list.innerHTML = renderMachineRows(getFilteredMachines());
   }
 });
 
-// Auto-save notes on blur (no re-render, just memory + storage)
+// Auto-save notes on blur
 document.addEventListener('blur', function(e) {
   const el = e.target;
   if (el.dataset.action === 'autosave') {
@@ -437,7 +530,7 @@ document.addEventListener('blur', function(e) {
   } else if (el.dataset.action === 'autosave-loc') {
     autosaveField(el.dataset.field, el.value, true);
   }
-}, true); // capture phase so it fires on all elements including inputs
+}, true);
 
 // ── Init ───────────────────────────────────────────────────────────────────
 
