@@ -1,4 +1,7 @@
 <?php
+require_once __DIR__ . '/auth.php';
+requireAuth();
+
 header('Content-Type: application/json');
 
 $dataFile = __DIR__ . '/data.json';

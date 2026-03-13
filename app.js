@@ -149,6 +149,7 @@ function renderList() {
   return `
     <div class="app-header">
       <h1>Pinball Notes</h1>
+      <a href="logout.php" class="icon-btn" style="font-size:18px; text-decoration:none;" title="Sign out">⏻</a>
     </div>
     <div class="content">
       <div class="search-wrap">
