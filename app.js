@@ -34,24 +34,43 @@ function save() {
   });
 }
 
-// Migrate old single-location format to multi-location format
+// Migrate old formats to current format
 function migrate(m) {
-  if (m.locations) return m; // already new format
+  // v1: single location with locationNotes object
+  if (!m.locations) {
+    return {
+      id: m.id,
+      name: m.name,
+      globalNotes: m.globalNotes || '',
+      updatedAt: m.updatedAt || Date.now(),
+      locations: [migrateLocation({
+        name:      m.location || 'Unknown',
+        skillShot: m.locationNotes?.skillShot  || '',
+        feeds:     m.locationNotes?.feeds      || '',
+        bouncePass:m.locationNotes?.bouncePass || '',
+        postPass:  m.locationNotes?.postPass   || '',
+        tapPass:   m.locationNotes?.tapPass    || '',
+        freeForm:  m.locationNotes?.freeForm   || '',
+      })],
+    };
+  }
+  // v2: multi-location but may have old field names
+  return { ...m, locations: m.locations.map(migrateLocation) };
+}
+
+// Migrate a single location object to the current field schema
+function migrateLocation(l) {
+  if ('flippers' in l) return l; // already current
+  // Fold bouncePass/postPass/tapPass into flippers
+  const parts = [l.bouncePass, l.postPass, l.tapPass].filter(Boolean);
   return {
-    id: m.id,
-    name: m.name,
-    globalNotes: m.globalNotes || '',
-    updatedAt: m.updatedAt || Date.now(),
-    locations: [{
-      id: genId(),
-      name: m.location || 'Unknown',
-      skillShot:  m.locationNotes?.skillShot  || '',
-      feeds:      m.locationNotes?.feeds      || '',
-      bouncePass: m.locationNotes?.bouncePass || '',
-      postPass:   m.locationNotes?.postPass   || '',
-      tapPass:    m.locationNotes?.tapPass    || '',
-      freeForm:   m.locationNotes?.freeForm   || '',
-    }],
+    id:        l.id || genId(),
+    name:      l.name || '',
+    skillShot: l.skillShot || '',
+    tilt:      l.tilt || '',
+    feeds:     l.feeds || '',
+    flippers:  parts.join('\n\n') || '',
+    freeForm:  l.freeForm || '',
   };
 }
 
@@ -60,7 +79,7 @@ function genId() {
 }
 
 function blankLocation(name) {
-  return { id: genId(), name: name || '', skillShot: '', feeds: '', bouncePass: '', postPass: '', tapPass: '', freeForm: '' };
+  return { id: genId(), name: name || '', skillShot: '', tilt: '', feeds: '', flippers: '', freeForm: '' };
 }
 
 function blankMachine(locationName) {
@@ -222,6 +241,18 @@ function renderLocationTab(machine) {
         >
       </div>
       <div class="field-group">
+        <label class="field-label">Tilt</label>
+        <input
+          class="field-input"
+          type="text"
+          data-action="autosave-loc"
+          data-field="tilt"
+          placeholder="Tilt sensitivity"
+          value="${esc(loc.tilt)}"
+          autocomplete="off"
+        >
+      </div>
+      <div class="field-group">
         <label class="field-label">Feeds</label>
         <textarea
           class="field-textarea"
@@ -231,31 +262,13 @@ function renderLocationTab(machine) {
         >${esc(loc.feeds)}</textarea>
       </div>
       <div class="field-group">
-        <label class="field-label">Bounce Pass</label>
+        <label class="field-label">Flippers</label>
         <textarea
           class="field-textarea"
           data-action="autosave-loc"
-          data-field="bouncePass"
-          placeholder="How the ball bounces off the flipper on this machine…"
-        >${esc(loc.bouncePass)}</textarea>
-      </div>
-      <div class="field-group">
-        <label class="field-label">Post Pass</label>
-        <textarea
-          class="field-textarea"
-          data-action="autosave-loc"
-          data-field="postPass"
-          placeholder="Right-to-left or left-to-right, timing notes…"
-        >${esc(loc.postPass)}</textarea>
-      </div>
-      <div class="field-group">
-        <label class="field-label">Tap Pass</label>
-        <textarea
-          class="field-textarea"
-          data-action="autosave-loc"
-          data-field="tapPass"
-          placeholder="Tap pass feel, timing quirks on this machine…"
-        >${esc(loc.tapPass)}</textarea>
+          data-field="flippers"
+          placeholder="Flipper notes — bounce pass, alley pass, post pass, etc."
+        >${esc(loc.flippers)}</textarea>
       </div>
       <div class="field-group">
         <label class="field-label">Additional Notes</label>
