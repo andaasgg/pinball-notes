@@ -2,7 +2,7 @@
 set -e
 
 # ── Backup live data before deploy ───────────────────────────
-BACKUP_DIR=~/projects/pinball-notes/.backups
+BACKUP_DIR=~/.pinball-notes-backups
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 mkdir -p "$BACKUP_DIR"
 tar -czf "$BACKUP_DIR/data_$TIMESTAMP.tar.gz" -C /var/www/pinball-notes data.json
