@@ -393,7 +393,7 @@ document.addEventListener('click', function(e) {
 
   if (action === 'open-machine') {
     state.activeId = el.dataset.id;
-    state.activeTab = 'global';
+    state.activeTab = state.lockedLocation ? 'location' : 'global';
     state.prevView = 'list';
     const machine = getMachine(state.activeId);
     // If a location is locked and this machine has it, open to that location
