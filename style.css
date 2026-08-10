@@ -442,3 +442,100 @@ html, body {
 
 .btn-primary:active { background: var(--accent-light); }
 .btn-secondary:active { background: var(--border); }
+
+.btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* ── Admin ── */
+.admin-section {
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.admin-hint {
+  font-size: 13px;
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+
+.admin-subheading {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--accent);
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+}
+
+.import-row-list,
+.dup-list {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.import-row {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.import-row-name {
+  font-size: 15px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.import-row-match {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--accent);
+  background: rgba(224, 123, 0, 0.15);
+  border-radius: 10px;
+  padding: 2px 8px;
+}
+
+.dup-row {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.dup-row-names {
+  font-size: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.dup-row-names > div:first-child,
+.dup-row-names > div:last-child {
+  font-weight: 600;
+}
+
+.dup-row-vs {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.dup-row-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}

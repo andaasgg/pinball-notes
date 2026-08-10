@@ -3,7 +3,7 @@
 // ── State ──────────────────────────────────────────────────────────────────
 
 const state = {
-  view: 'list',           // 'list' | 'detail' | 'edit'
+  view: 'list',           // 'list' | 'detail' | 'edit' | 'admin'
   machines: [],
   activeId: null,
   activeLocationId: null, // which location is shown in the "This Machine" tab
@@ -12,6 +12,16 @@ const state = {
   lockedLocation: null,
   editDraft: null,
   prevView: 'list',
+  admin: {
+    tab: 'import',        // 'import' | 'merge'
+    importLocation: '',
+    importText: '',
+    importRows: null,     // null until "Preview Import" is run
+    dismissedPairs: [],   // session-only dismissed duplicate suggestions
+    manualA: '',
+    manualB: '',
+    mergeModal: null,     // { aId, bId, name, globalNotes, locations }
+  },
 };
 
 // ── Persistence ────────────────────────────────────────────────────────────
@@ -82,10 +92,10 @@ function blankLocation(name) {
   return { id: genId(), name: name || '', skillShot: '', tilt: '', feeds: '', flippers: '', freeForm: '' };
 }
 
-function blankMachine(locationName) {
+function blankMachine(locationName, name) {
   return {
     id: genId(),
-    name: '',
+    name: name || '',
     globalNotes: '',
     updatedAt: Date.now(),
     locations: [blankLocation(locationName || '')],
@@ -121,6 +131,123 @@ function getFilteredMachines() {
       return matchesSearch && matchesLocation;
     })
     .sort((a, b) => a.name.localeCompare(b.name));
+}
+
+// ── Fuzzy name matching (for import / duplicate detection) ────────────────
+
+// Lowercase, strip punctuation, collapse whitespace — so "Avengers: Infinity
+// Quest (Pro)" and "avengers infinity quest pro" compare equal-ish.
+function normalizeName(s) {
+  return String(s || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim()
+    .replace(/\s+/g, ' ');
+}
+
+function bigramCounts(s) {
+  const map = new Map();
+  for (let i = 0; i < s.length - 1; i++) {
+    const bg = s.substr(i, 2);
+    map.set(bg, (map.get(bg) || 0) + 1);
+  }
+  return map;
+}
+
+// Sørensen–Dice coefficient over character bigrams, 0..1.
+function diceCoefficient(a, b) {
+  if (a === b) return 1;
+  if (a.length < 2 || b.length < 2) return 0;
+  const mapA = bigramCounts(a);
+  const mapB = bigramCounts(b);
+  let intersection = 0;
+  mapA.forEach((count, bg) => {
+    if (mapB.has(bg)) intersection += Math.min(count, mapB.get(bg));
+  });
+  const total = (a.length - 1) + (b.length - 1);
+  return total === 0 ? 0 : (2 * intersection) / total;
+}
+
+// Similarity score 0..1 between two machine/game names. Robust to variant
+// suffixes like "(Pro)", "(LE)", punctuation, and casing — e.g. "Avengers
+// Infinity Quest" vs "Avengers Infinity Quest (Pro)" scores high via the
+// substring-containment bonus even though the bigram overlap alone is lower.
+function nameSimilarity(rawA, rawB) {
+  const a = normalizeName(rawA);
+  const b = normalizeName(rawB);
+  if (!a || !b) return 0;
+  if (a === b) return 1;
+  let score = diceCoefficient(a, b);
+  if (a.includes(b) || b.includes(a)) {
+    score = Math.max(score, 0.88);
+  }
+  return score;
+}
+
+const DUPLICATE_THRESHOLD = 0.72;
+
+// Best existing-machine match for a candidate name. Returns {machine, score} or null.
+function bestMachineMatch(name, excludeId) {
+  let best = null;
+  state.machines.forEach(m => {
+    if (m.id === excludeId) return;
+    const score = nameSimilarity(name, m.name);
+    if (!best || score > best.score) best = { machine: m, score };
+  });
+  return best && best.score > 0 ? best : null;
+}
+
+function pairKey(aId, bId) {
+  return [aId, bId].sort().join('|');
+}
+
+// All pairs of existing machines whose names look like likely duplicates.
+function findDuplicateCandidates() {
+  const machines = state.machines;
+  const pairs = [];
+  for (let i = 0; i < machines.length; i++) {
+    for (let j = i + 1; j < machines.length; j++) {
+      const score = nameSimilarity(machines[i].name, machines[j].name);
+      if (score >= DUPLICATE_THRESHOLD) {
+        pairs.push({ aId: machines[i].id, bId: machines[j].id, score });
+      }
+    }
+  }
+  return pairs
+    .filter(p => !state.admin.dismissedPairs.includes(pairKey(p.aId, p.bId)))
+    .sort((a, b) => b.score - a.score);
+}
+
+// ── Merge helpers ───────────────────────────────────────────────────────────
+
+function combineText(a, b) {
+  a = (a || '').trim();
+  b = (b || '').trim();
+  if (!a) return b;
+  if (!b) return a;
+  if (a === b) return a;
+  return a + '\n\n' + b;
+}
+
+// Combine two locations arrays. Locations with the same name (case-insensitive)
+// are folded into one, with each note field concatenated; everything else is
+// just appended.
+function mergeLocationArrays(locsA, locsB) {
+  const merged = locsA.map(l => ({ ...l }));
+  locsB.forEach(lb => {
+    const key = lb.name.trim().toLowerCase();
+    const match = key && merged.find(la => la.name.trim().toLowerCase() === key);
+    if (match) {
+      match.skillShot = combineText(match.skillShot, lb.skillShot);
+      match.tilt      = combineText(match.tilt, lb.tilt);
+      match.feeds      = combineText(match.feeds, lb.feeds);
+      match.flippers   = combineText(match.flippers, lb.flippers);
+      match.freeForm   = combineText(match.freeForm, lb.freeForm);
+    } else {
+      merged.push({ ...lb, id: genId() });
+    }
+  });
+  return merged;
 }
 
 // ── Rendering ──────────────────────────────────────────────────────────────
@@ -168,6 +295,7 @@ function renderList() {
   return `
     <div class="app-header">
       <h1>Pinball Notes</h1>
+      <button class="icon-btn" data-action="open-admin" aria-label="Admin" title="Admin">⚙</button>
       <a href="logout.php" class="icon-btn" style="font-size:18px; text-decoration:none;" title="Sign out">⏻</a>
     </div>
     <div class="content">
@@ -308,6 +436,204 @@ function renderDetail() {
   `;
 }
 
+function renderMachineOptions(selectedId) {
+  return [...state.machines]
+    .sort((a, b) => a.name.localeCompare(b.name))
+    .map(m => `<option value="${esc(m.id)}" ${m.id === selectedId ? 'selected' : ''}>${esc(m.name)}</option>`)
+    .join('');
+}
+
+function renderAdmin() {
+  const a = state.admin;
+  return `
+    <div class="app-header">
+      <button class="back-btn" data-action="admin-back">Back</button>
+      <h1 style="font-size:16px; color: var(--text);">Admin</h1>
+    </div>
+    <div class="tab-bar">
+      <button class="tab-btn ${a.tab === 'import' ? 'active' : ''}"
+        data-action="switch-admin-tab" data-tab="import">Import Games</button>
+      <button class="tab-btn ${a.tab === 'merge' ? 'active' : ''}"
+        data-action="switch-admin-tab" data-tab="merge">Merge / Duplicates</button>
+    </div>
+    <div class="content">${a.tab === 'import' ? renderAdminImport() : renderAdminMerge()}</div>
+    ${a.mergeModal ? renderMergeModal() : ''}
+  `;
+}
+
+function renderAdminImport() {
+  const a = state.admin;
+
+  if (!a.importRows) {
+    const locOptions = allLocationNames().map(n => `<option value="${esc(n)}">`).join('');
+    return `
+      <div class="admin-section">
+        <p class="admin-hint">Paste a list of game names (one per line) to add them all to a location at once. Likely duplicates already in your collection will be flagged for review before anything is saved.</p>
+        <div class="field-group">
+          <label class="field-label">Location</label>
+          <input
+            class="field-input"
+            id="import-location"
+            type="text"
+            list="import-location-list"
+            placeholder="e.g. Ground Kontrol, Portland"
+            value="${esc(a.importLocation)}"
+            autocomplete="off"
+            autocorrect="off"
+          >
+          <datalist id="import-location-list">${locOptions}</datalist>
+        </div>
+        <div class="field-group">
+          <label class="field-label">Game Names</label>
+          <textarea
+            class="field-textarea tall"
+            id="import-text"
+            placeholder="Godzilla&#10;Avengers Infinity Quest&#10;Deadpool…"
+          >${esc(a.importText)}</textarea>
+        </div>
+        <div class="modal-actions">
+          <button class="btn btn-primary" data-action="preview-import">Preview Import</button>
+        </div>
+      </div>
+    `;
+  }
+
+  const rows = a.importRows;
+  const createCount = rows.filter(r => r.decision === 'create').length;
+  const mergeCount = rows.filter(r => r.decision === 'merge').length;
+  const skipCount = rows.filter(r => r.decision === 'skip').length;
+  const importCount = rows.length - skipCount;
+
+  const rowsHtml = rows.map((r, i) => {
+    const matchBadge = r.match && r.decision === 'merge'
+      ? `<span class="import-row-match">${Math.round(r.match.score * 100)}% match</span>`
+      : '';
+    return `
+      <li class="import-row">
+        <div class="import-row-name">${esc(r.name)}${matchBadge}</div>
+        <select class="field-input import-row-select" data-action="set-import-decision" data-index="${i}">
+          <option value="create" ${r.decision === 'create' ? 'selected' : ''}>➕ Create new machine</option>
+          <option value="skip" ${r.decision === 'skip' ? 'selected' : ''}>Skip this game</option>
+          <optgroup label="Merge into existing…">
+            ${[...state.machines].sort((x, y) => x.name.localeCompare(y.name)).map(m => `
+              <option value="merge:${esc(m.id)}" ${r.decision === 'merge' && r.matchId === m.id ? 'selected' : ''}>${esc(m.name)}</option>
+            `).join('')}
+          </optgroup>
+        </select>
+      </li>`;
+  }).join('');
+
+  return `
+    <div class="admin-section">
+      <p class="admin-hint">Importing into <strong>${esc(a.importLocation)}</strong> — ${createCount} new, ${mergeCount} merged, ${skipCount} skipped.</p>
+      <ul class="import-row-list">${rowsHtml}</ul>
+      <div class="modal-actions">
+        <button class="btn btn-secondary" data-action="cancel-import-preview">Start Over</button>
+        <button class="btn btn-primary" data-action="confirm-import" ${importCount === 0 ? 'disabled' : ''}>Import ${importCount} Game${importCount === 1 ? '' : 's'}</button>
+      </div>
+    </div>
+  `;
+}
+
+function renderAdminMerge() {
+  const a = state.admin;
+  const candidates = findDuplicateCandidates();
+
+  const candidatesHtml = candidates.length
+    ? candidates.map(p => {
+        const ma = getMachine(p.aId), mb = getMachine(p.bId);
+        if (!ma || !mb) return '';
+        return `
+          <li class="dup-row">
+            <div class="dup-row-names">
+              <div>${esc(ma.name)}</div>
+              <div class="dup-row-vs">↔ ${Math.round(p.score * 100)}% match</div>
+              <div>${esc(mb.name)}</div>
+            </div>
+            <div class="dup-row-actions">
+              <button class="loc-action-btn" data-action="dismiss-dup" data-a="${esc(p.aId)}" data-b="${esc(p.bId)}">Not a duplicate</button>
+              <button class="btn btn-primary" style="flex:0; padding:8px 14px;" data-action="open-merge" data-a="${esc(p.aId)}" data-b="${esc(p.bId)}">Merge</button>
+            </div>
+          </li>`;
+      }).join('')
+    : `<p class="admin-hint">No likely duplicates found.</p>`;
+
+  return `
+    <div class="admin-section">
+      <h2 class="admin-subheading">Possible Duplicates</h2>
+      <ul class="dup-list">${candidatesHtml}</ul>
+
+      <h2 class="admin-subheading">Manual Merge</h2>
+      <p class="admin-hint">Pick any two machines to merge into one.</p>
+      <div class="field-group">
+        <label class="field-label">Machine A</label>
+        <select class="field-input" data-action="set-manual-a">
+          <option value="">Select a machine…</option>
+          ${renderMachineOptions(a.manualA)}
+        </select>
+      </div>
+      <div class="field-group">
+        <label class="field-label">Machine B</label>
+        <select class="field-input" data-action="set-manual-b">
+          <option value="">Select a machine…</option>
+          ${renderMachineOptions(a.manualB)}
+        </select>
+      </div>
+      <div class="modal-actions">
+        <button class="btn btn-primary" data-action="open-manual-merge">Merge Selected</button>
+      </div>
+    </div>
+  `;
+}
+
+function renderMergeModal() {
+  const mm = state.admin.mergeModal;
+  const ma = getMachine(mm.aId), mb = getMachine(mm.bId);
+  if (!ma || !mb) return '';
+  return `
+    <div class="modal-overlay" data-action="cancel-merge-overlay">
+      <div class="modal">
+        <h2>Merge Machines</h2>
+        <p class="admin-hint">Combines locations and notes from both into one machine. This cannot be undone.</p>
+        <div class="field-group">
+          <label class="field-label">Machine Name</label>
+          <input class="field-input" id="merge-name" type="text" value="${esc(mm.name)}" autocomplete="off">
+          <div class="dup-row-actions">
+            <button class="loc-action-btn" data-action="use-name-a">Use "${esc(ma.name)}"</button>
+            <button class="loc-action-btn" data-action="use-name-b">Use "${esc(mb.name)}"</button>
+          </div>
+        </div>
+        <div class="field-group">
+          <label class="field-label">Global Notes (combined)</label>
+          <textarea class="field-textarea tall" id="merge-notes">${esc(mm.globalNotes)}</textarea>
+        </div>
+        <div class="field-group">
+          <label class="field-label">Locations (${mm.locations.length})</label>
+          <div class="admin-hint">${mm.locations.map(l => esc(l.name || 'Unnamed')).join(', ')}</div>
+        </div>
+        <div class="modal-actions">
+          <button class="btn btn-secondary" data-action="cancel-merge">Cancel</button>
+          <button class="btn btn-primary" data-action="confirm-merge">Merge</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function openMergeModal(aId, bId) {
+  const ma = getMachine(aId), mb = getMachine(bId);
+  if (!ma || !mb) return;
+  // Default the canonical name to whichever machine covers more locations.
+  const primary = ma.locations.length >= mb.locations.length ? ma : mb;
+  state.admin.mergeModal = {
+    aId, bId,
+    name: primary.name,
+    globalNotes: combineText(ma.globalNotes, mb.globalNotes),
+    locations: mergeLocationArrays(ma.locations, mb.locations),
+  };
+  render();
+}
+
 function renderEditModal() {
   const d = state.editDraft;
   const isNew = !getMachine(d.id);
@@ -359,6 +685,8 @@ function render() {
     }
   } else if (state.view === 'detail') {
     app.innerHTML = renderDetail();
+  } else if (state.view === 'admin') {
+    app.innerHTML = renderAdmin();
   } else if (state.view === 'edit') {
     const base = state.prevView === 'detail' ? renderDetail() : renderList();
     app.innerHTML = base + renderEditModal();
@@ -523,6 +851,134 @@ document.addEventListener('click', function(e) {
   } else if (action === 'set-location-lock') {
     state.lockedLocation = el.dataset.location || null;
     render();
+
+  // ── Admin ──
+
+  } else if (action === 'open-admin') {
+    state.view = 'admin';
+    render();
+
+  } else if (action === 'admin-back') {
+    state.view = 'list';
+    render();
+
+  } else if (action === 'switch-admin-tab') {
+    state.admin.tab = el.dataset.tab;
+    render();
+
+  } else if (action === 'preview-import') {
+    const locInput = document.getElementById('import-location');
+    const textInput = document.getElementById('import-text');
+    const location = locInput.value.trim();
+    if (!location) {
+      locInput.focus();
+      locInput.style.borderColor = 'var(--danger)';
+      return;
+    }
+    const names = [...new Set(
+      textInput.value.split('\n').map(s => s.trim()).filter(Boolean)
+    )];
+    if (!names.length) {
+      textInput.focus();
+      textInput.style.borderColor = 'var(--danger)';
+      return;
+    }
+    state.admin.importLocation = location;
+    state.admin.importText = textInput.value;
+    state.admin.importRows = names.map(name => {
+      const match = bestMachineMatch(name);
+      const isMatch = match && match.score >= DUPLICATE_THRESHOLD;
+      return {
+        name,
+        match,
+        matchId: isMatch ? match.machine.id : null,
+        decision: isMatch ? 'merge' : 'create',
+      };
+    });
+    render();
+
+  } else if (action === 'cancel-import-preview') {
+    state.admin.importRows = null;
+    render();
+
+  } else if (action === 'confirm-import') {
+    const rows = state.admin.importRows || [];
+    const location = state.admin.importLocation;
+    rows.forEach(r => {
+      if (r.decision === 'skip') return;
+      if (r.decision === 'merge' && r.matchId) {
+        const machine = getMachine(r.matchId);
+        if (!machine) return;
+        const existingLoc = machine.locations.find(
+          l => l.name.trim().toLowerCase() === location.toLowerCase()
+        );
+        if (!existingLoc) machine.locations.push(blankLocation(location));
+        machine.updatedAt = Date.now();
+      } else {
+        state.machines.push(blankMachine(location, r.name));
+      }
+    });
+    save();
+    state.admin.importRows = null;
+    state.admin.importText = '';
+    state.admin.importLocation = '';
+    state.view = 'list';
+    render();
+
+  } else if (action === 'dismiss-dup') {
+    state.admin.dismissedPairs.push(pairKey(el.dataset.a, el.dataset.b));
+    render();
+
+  } else if (action === 'open-merge') {
+    openMergeModal(el.dataset.a, el.dataset.b);
+
+  } else if (action === 'open-manual-merge') {
+    const { manualA, manualB } = state.admin;
+    if (!manualA || !manualB || manualA === manualB) {
+      alert('Pick two different machines to merge.');
+      return;
+    }
+    openMergeModal(manualA, manualB);
+
+  } else if (action === 'use-name-a') {
+    const ma = getMachine(state.admin.mergeModal.aId);
+    const input = document.getElementById('merge-name');
+    if (ma && input) input.value = ma.name;
+
+  } else if (action === 'use-name-b') {
+    const mb = getMachine(state.admin.mergeModal.bId);
+    const input = document.getElementById('merge-name');
+    if (mb && input) input.value = mb.name;
+
+  } else if (action === 'cancel-merge') {
+    state.admin.mergeModal = null;
+    render();
+
+  } else if (action === 'cancel-merge-overlay') {
+    if (e.target !== el) return;
+    state.admin.mergeModal = null;
+    render();
+
+  } else if (action === 'confirm-merge') {
+    const mm = state.admin.mergeModal;
+    const ma = getMachine(mm.aId), mb = getMachine(mm.bId);
+    if (!ma || !mb) { state.admin.mergeModal = null; render(); return; }
+    const nameInput = document.getElementById('merge-name');
+    const notesInput = document.getElementById('merge-notes');
+    const merged = {
+      id: ma.id,
+      name: nameInput.value.trim() || ma.name,
+      globalNotes: notesInput.value,
+      updatedAt: Date.now(),
+      locations: mm.locations,
+    };
+    state.machines = state.machines.filter(m => m.id !== ma.id && m.id !== mb.id);
+    state.machines.push(merged);
+    save();
+    state.admin.mergeModal = null;
+    state.admin.manualA = '';
+    state.admin.manualB = '';
+    render();
   }
 });
 
@@ -533,6 +989,28 @@ document.addEventListener('input', function(e) {
     state.searchQuery = el.value;
     const list = document.querySelector('.machine-list');
     if (list) list.innerHTML = renderMachineRows(getFilteredMachines());
+  }
+});
+
+// Admin dropdowns (import row decisions, manual merge picks)
+document.addEventListener('change', function(e) {
+  const el = e.target;
+  if (el.dataset.action === 'set-import-decision') {
+    const row = state.admin.importRows?.[Number(el.dataset.index)];
+    if (!row) return;
+    const val = el.value;
+    if (val === 'create' || val === 'skip') {
+      row.decision = val;
+      row.matchId = null;
+    } else if (val.startsWith('merge:')) {
+      row.decision = 'merge';
+      row.matchId = val.slice('merge:'.length);
+    }
+    render();
+  } else if (el.dataset.action === 'set-manual-a') {
+    state.admin.manualA = el.value;
+  } else if (el.dataset.action === 'set-manual-b') {
+    state.admin.manualB = el.value;
   }
 });
 
